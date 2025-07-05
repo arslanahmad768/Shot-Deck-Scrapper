@@ -4,6 +4,7 @@ from typing import List, Optional
 import logging
 import pandas as pd
 import re
+import os
 import time
 
 CSV_FILE = "image_metadata.csv"
@@ -17,66 +18,91 @@ class PaginationHandler:
 
     
     async def scrap_images(self, page: Page):
-        """Scrap images from the page"""
+        """Scrape images from the page with scrolling support"""
         try:
             print("Scraping started...")
             all_data = []
-            seen_columns = set()
+            seen_urls = set()
+            total_found = 0
+            max_images = 2_000_000
+            scroll_pause = 2000
+            batch_limit = 50
+            scroll_attempts = 0
+            max_scroll_attempts = 50  # fallback to break if nothing new is loaded
 
-            image_containers = await page.query_selector_all('div.outerimage.jg-entry.entry-visible')
-            print("Total containers found:", len(image_containers))
-            await page.wait_for_timeout(3000)
+            while total_found < max_images and scroll_attempts < max_scroll_attempts:
+                await page.wait_for_timeout(scroll_pause)
 
-            for idx in range(len(image_containers)):
-                image_data = {}
+                containers = await page.query_selector_all('div.outerimage.jg-entry.entry-visible')
+                print(f"🖼️ Found {len(containers)} containers after scroll #{scroll_attempts + 1}")
 
-                try:
-                    containers = await page.query_selector_all('div.outerimage.jg-entry.entry-visible')
-                    container = containers[idx]
+                new_data = []
 
-                    # Extract image URL
-                    img = await container.query_selector('img.still')
-                    if img:
-                        src = await img.get_attribute('src')
-                        img_url = f"https://shotdeck.com{src}"
-                        if src:
+                for idx in range(len(containers)):
+                    image_data = {}
+
+                    try:
+                        # Re-fetch container each time to avoid stale references
+                        containers = await page.query_selector_all('div.outerimage.jg-entry.entry-visible')
+                        container = containers[idx]
+
+                        # Get image src
+                        img = await container.query_selector('img.still')
+                        if img:
+                            src = await img.get_attribute('src')
+                            img_url = f"https://shotdeck.com{src}"
+                            if src in seen_urls:
+                                continue
+                            seen_urls.add(src)
                             image_data["Image URL"] = img_url
 
-                    # Click image to open modal
-                    link = await container.query_selector('a.gallerythumb')
-                    if link:
-                        await link.click()
+                        # Click to open modal
+                        link = await container.query_selector('a.gallerythumb')
+                        if link:
+                            await link.click()
+                            await page.wait_for_timeout(1000)
+
+                            # Extract metadata
+                            metadata = await self.extract_metadata_from_modal(page)
+                            image_data.update(metadata)
+
+                            # Close modal
+                            try:
+                                close_btn = await page.wait_for_selector('#shotModal button.close', timeout=3000)
+                                await close_btn.click()
+                                await page.wait_for_timeout(500)
+                            except Exception as e:
+                                print("❌ Error closing modal:", e)
+
+                        new_data.append(image_data)
+                        total_found += 1
+                        print(f"✅ Scraped [{total_found}] - {img_url}")
+
+                        if total_found >= max_images or len(new_data) >= batch_limit:
+                            break
+
                         await page.wait_for_timeout(1000)
 
-                        # Extract modal metadata
-                        metadata = await self.extract_metadata_from_modal(page)
-                        image_data.update(metadata)
-                        seen_columns.update(image_data.keys())
+                    except Exception as e:
+                        print(f"⚠️ Error scraping image #{idx}: {e}")
+                        continue
 
-                        # Close modal safely
-                        try:
-                            close_btn = await page.wait_for_selector('#shotModal button.close', timeout=3000)
-                            await close_btn.click()
-                            await page.wait_for_timeout(500)
-                        except Exception as e:
-                            print("Error closing modal:", e)
+                if new_data:
+                    df = pd.DataFrame(new_data)
+                    df.to_csv(CSV_FILE, mode='a', header=not os.path.exists(CSV_FILE), index=False)
+                    print(f"💾 Saved {len(new_data)} records. Total so far: {total_found}")
+                    scroll_attempts = 0  # reset scroll attempts if new data was found
+                else:
+                    scroll_attempts += 1
 
-                        all_data.append(image_data)
-                        print(f"[{idx+1}] Collected {len(image_data)} fields")
+                # Scroll down to load more images
+                await page.evaluate("window.scrollBy(0, window.innerHeight);")
 
-                except Exception as e:
-                    logger.warning(f"Error processing image #{idx}: {e}")
-                    continue
-
-                await page.wait_for_timeout(1000)
-
-            # Save all data to CSV
-            df = pd.DataFrame(all_data)
-            df.to_csv(CSV_FILE, index=False)
-            print(f"Saved {len(df)} records to {CSV_FILE}")
+            print(f"🎉 Finished scraping {total_found} images.")
 
         except Exception as e:
-            logger.error(f"Unexpected scraping error: {e}")
+            logger.error(f"❌ Unexpected error in scrap_images: {e}")
+
 
     async def extract_metadata_from_modal(self, page: Page):
         """Extract metadata shown in the modal"""

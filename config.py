@@ -10,7 +10,7 @@ class ScrapingConfig:
     
     # Scraping settings
     base_url: str = 'https://shotdeck.com'
-    browse_url: str = 'https://shotdeck.com/browse/stills'
+    browse_url: str = 'https://shotdeck.com/browse/stills#/sort/movie_year_desc'
     
     # Performance settings
     concurrent_browsers: int = 3
