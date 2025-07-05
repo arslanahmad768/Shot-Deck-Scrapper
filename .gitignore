@@ -1,0 +1,7 @@
+node_modules
+.env
+venv/
+shotdeck_scraper.log
+__pycache__/
+logs/
+shotdeck_data.db
