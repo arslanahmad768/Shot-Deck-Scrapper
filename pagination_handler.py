@@ -19,63 +19,69 @@ class PaginationHandler:
     async def scrap_images(self, page: Page):
         """Scrap images from the page"""
         try:
-            print("Scrapping.....")
+            print("Scraping started...")
             all_data = []
             seen_columns = set()
-            image_containers = await page.query_selector_all('div.outerimage.jg-entry.entry-visible')
-            print("total container...", len(image_containers))
-            time.sleep(5)
 
-            for container in image_containers:
+            image_containers = await page.query_selector_all('div.outerimage.jg-entry.entry-visible')
+            print("Total containers found:", len(image_containers))
+            await page.wait_for_timeout(3000)
+
+            for idx in range(len(image_containers)):
                 image_data = {}
 
-                # Extract image src
-                img = await container.query_selector('img.still')
-                if img:
-                    src = await img.get_attribute('src')
-                    if src:
-                        image_data["Image URL"] = src
+                try:
+                    containers = await page.query_selector_all('div.outerimage.jg-entry.entry-visible')
+                    container = containers[idx]
 
-                # Click image
-                link = await container.query_selector('a.gallerythumb')
-                if link:
-                    await link.click()
-                    await page.wait_for_timeout(1000)
+                    # Extract image URL
+                    img = await container.query_selector('img.still')
+                    if img:
+                        src = await img.get_attribute('src')
+                        img_url = f"https://shotdeck.com{src}"
+                        if src:
+                            image_data["Image URL"] = img_url
 
-                    # Extract metadata
-                    metadata = await self.extract_metadata_from_modal(page)
-                    time.sleep(5)
-                    image_data.update(metadata)
-                    seen_columns.update(image_data.keys())
+                    # Click image to open modal
+                    link = await container.query_selector('a.gallerythumb')
+                    if link:
+                        await link.click()
+                        await page.wait_for_timeout(1000)
 
-                    # Close modal
-                    try:
-                        close_btn = await page.wait_for_selector('#shotModal button.close', timeout=3000)
-                        await close_btn.click()
-                        await page.wait_for_timeout(500)
-                    except Exception as e:
-                        print("Error closing modal:", e)
+                        # Extract modal metadata
+                        metadata = await self.extract_metadata_from_modal(page)
+                        image_data.update(metadata)
+                        seen_columns.update(image_data.keys())
 
-                    all_data.append(image_data)
-                    print("All data...", len(all_data))
-                    time.sleep(5)
+                        # Close modal safely
+                        try:
+                            close_btn = await page.wait_for_selector('#shotModal button.close', timeout=3000)
+                            await close_btn.click()
+                            await page.wait_for_timeout(500)
+                        except Exception as e:
+                            print("Error closing modal:", e)
 
+                        all_data.append(image_data)
+                        print(f"[{idx+1}] Collected {len(image_data)} fields")
 
-            # Save to CSV
+                except Exception as e:
+                    logger.warning(f"Error processing image #{idx}: {e}")
+                    continue
+
+                await page.wait_for_timeout(1000)
+
+            # Save all data to CSV
             df = pd.DataFrame(all_data)
             df.to_csv(CSV_FILE, index=False)
             print(f"Saved {len(df)} records to {CSV_FILE}")
 
-
-        
         except Exception as e:
-            logger.error(f"Error detecting total pages: {e}")
-        return None
-    
-    async def extract_metadata_from_modal(self, page):
+            logger.error(f"Unexpected scraping error: {e}")
+
+    async def extract_metadata_from_modal(self, page: Page):
+        """Extract metadata shown in the modal"""
         metadata = {}
         try:
-            # Wait for modal and metadata block
             await page.wait_for_selector("#shotModal .detail-group", timeout=3000)
             detail_groups = await page.query_selector_all("#shotModal .detail-group")
 
@@ -86,14 +92,17 @@ class PaginationHandler:
                 if label_elem and value_elem:
                     label = (await label_elem.inner_text()).strip(":").strip()
                     value_links = await value_elem.query_selector_all("a")
+
                     if value_links:
                         values = [await a.inner_text() for a in value_links]
                         metadata[label] = ", ".join(values)
                     else:
                         span = await value_elem.query_selector("span")
                         metadata[label] = await span.inner_text() if span else await value_elem.inner_text()
+
         except Exception as e:
             print("Error extracting metadata:", e)
+
         return metadata
                 
     
